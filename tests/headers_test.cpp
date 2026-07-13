@@ -1,38 +1,47 @@
 #include <gtest/gtest.h>
 #include "headers.h"
 
-TEST(iterHeaders, Empty) {
+TEST(iterHeaders, Empty)
+{
   // code here
 }
 
-TEST(iterHeaders, SkipRequestLine) {
+TEST(iterHeaders, SkipRequestLine)
+{
   // code here
 }
 
-TEST(iterHeaders, SingleHeader) {
+TEST(iterHeaders, SingleHeader)
+{
   // code here
 }
 
-TEST(iterHeaders, MultipleHeaders) {
+TEST(iterHeaders, MultipleHeaders)
+{
   // code here
 }
 
-TEST(iterHeaders, MultipleSameHeaders) {
+TEST(iterHeaders, MultipleSameHeaders)
+{
   // code here
 }
 
-TEST(findHostPort, Simple) {
+TEST(findHostPort, Simple)
+{
   // code here
 }
 
-TEST(findHostPort, NoHost) {
+TEST(findHostPort, NoHost)
+{
   // code here
 }
 
-TEST(findContentLength, Simple) {
+TEST(findContentLength, Simple)
+{
   // code here
 }
 
-TEST(findContentLength, NoContentLength) {
+TEST(findContentLength, NoContentLength)
+{
   // code here
 }

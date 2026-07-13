@@ -8,14 +8,19 @@ using namespace std::string_view_literals;
 using Callback = std::function<void(std::string_view, std::string_view)>;
 
 
-void iterHeaders(std::string_view req, Callback&& callback) {
+void iterHeaders(std::string_view req, Callback&& callback)
+{
   // code here
 }
 
-std::pair<std::string, std::string> findHostPort(std::string_view req) {
+std::pair<std::string, std::string> findHostPort(std::string_view req)
+{
   // code here
+  return std::pair<std::string, std::string>();
 }
 
-std::optional<size_t> findContentLength(std::string_view rsp) {
+std::optional<size_t> findContentLength(std::string_view rsp)
+{
   // code here
+  return std::nullopt;
 }
