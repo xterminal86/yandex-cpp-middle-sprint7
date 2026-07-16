@@ -8,10 +8,6 @@
 #include <boost/asio/read_until.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/version.hpp>
-
 #include <string_view>
 #include <iostream>
 #include <print>
@@ -30,13 +26,20 @@ using boost::asio::ip::tcp;
 
 constexpr std::string_view delimiter = "\r\n\r\n";
 
+const std::string Ruler(80, '-');
+const std::string RulerSND(80, '>');
+const std::string RulerRCV(80, '<');
+
 // =============================================================================
 
-struct HttpRequest
+struct HttpObject
 {
-  std::string Method;
-  std::string Path;
-  std::string Version;
+  //
+  // Not the best solution, but just to save overall time dealing with this.
+  //
+  // E.g. 'GET / HTTP/1.1' for request or 'HTTP/1.1 200 OK' for response.
+  //
+  std::tuple<std::string, std::string, std::string> FirstLine;
 
   std::unordered_map<std::string, std::string> Headers;
 
@@ -70,9 +73,9 @@ struct HttpRequest
   {
     std::stringstream ss;
 
-    ss << std::format("Method:  '{}'\n", Method)
-       << std::format("Path:    '{}'\n", Path)
-       << std::format("Version: '{}'\n\n", Version)
+    ss << std::format("Method  / Version: '{}'\n",   std::get<0>(FirstLine))
+       << std::format("Path    / Status : '{}'\n",   std::get<1>(FirstLine))
+       << std::format("Version / Message: '{}'\n\n", std::get<2>(FirstLine))
        << "Headers:\n\n";
 
     size_t n = 1;
@@ -106,13 +109,37 @@ std::vector<std::string> StringSplit(const std::string& str, char delimiter)
 
 // =============================================================================
 
-std::optional<HttpRequest> ParseRequest(std::string& rcv)
+//
+// NOTE: search for whitespaces only (i.e. ' ').
+//
+std::string Trim(const std::string& in)
 {
-  HttpRequest req;
+  auto _ltrim = [](const std::string& s)
+  {
+    size_t start = s.find_first_not_of(' ');
+    return (start == std::string::npos) ? "" : s.substr(start);
+  };
 
-  bool requestOk = true;
+  auto _rtrim = [](const std::string& s)
+  {
+    size_t end = s.find_last_not_of(' ');
+    return (end == std::string::npos) ? "" : s.substr(0, end + 1);
+  };
 
+  return _rtrim(_ltrim(in));
+}
+
+// =============================================================================
+
+std::optional<HttpObject> StringToHttpObject(std::string& rcv, bool isRequest)
+{
+  HttpObject obj;
+
+  bool parseOk = true;
+
+  //
   // Cannot use const here for some fucking reason.
+  //
   std::string reqiestDataDelimiter = "\r\n";
 
   std::vector<std::string> postData;
@@ -134,20 +161,26 @@ std::optional<HttpRequest> ParseRequest(std::string& rcv)
   {
     const std::string& line = postData[i];
 
+    //
     // 'GET / HTTP/1.1' or whatever.
+    //
+    // RFC says that 1 space character is a delimiter:
+    // 'status-line = HTTP-version SP status-code SP reason-phrase CRLF'
+    // so theoretically there can be multiple spaces in between.
+    //
     if (i == 0)
     {
       std::vector<std::string> parts = StringSplit(line, ' ');
       if (parts.size() == 3)
       {
-        req.Method  = parts[0];
-        req.Path    = parts[1];
-        req.Version = parts[2];
+        std::get<0>(obj.FirstLine) = Trim(parts[0]);
+        std::get<1>(obj.FirstLine) = Trim(parts[1]);
+        std::get<2>(obj.FirstLine) = Trim(parts[2]);
       }
       else
       {
         std::cerr << "Cannot parse '<METHOD> <PATH> <VERSION>'!\n";
-        requestOk = false;
+        parseOk = false;
         break;
       }
     }
@@ -164,7 +197,7 @@ std::optional<HttpRequest> ParseRequest(std::string& rcv)
         //
         if (emptyLinesCount >= 1)
         {
-          req.Body = line;
+          obj.Body = line;
         }
         else
         {
@@ -202,8 +235,9 @@ std::optional<HttpRequest> ParseRequest(std::string& rcv)
                                   value.begin() + end + 1);
             }
 
+            //
             // HTTP header keys are case-insensitive.
-
+            //
             std::transform(
               key.begin(),
               key.end(),
@@ -214,12 +248,12 @@ std::optional<HttpRequest> ParseRequest(std::string& rcv)
               }
             );
 
-            req.Headers[key] = value;
+            obj.Headers[key] = value;
           }
           else
           {
             std::cerr << std::format("Invalid header format: '{}'!\n", line);
-            requestOk = false;
+            parseOk = false;
             break;
           }
         }
@@ -227,27 +261,31 @@ std::optional<HttpRequest> ParseRequest(std::string& rcv)
     }
   }
 
-  if (requestOk)
+  if (parseOk)
   {
-    std::println("---------------");
-    std::println("Parsed request:");
-    std::println("---------------");
-    std::println("{}", req.ToString());
-    std::println("---------------");
+    std::println("{}", (isRequest ? RulerSND : RulerRCV));
+    std::println("Parsed {}:\n", (isRequest ? "request" : "response"));
+    std::println("{}", obj.ToString());
+    std::println("{}", (isRequest ? RulerSND : RulerRCV));
   }
   else
   {
     return std::nullopt;
   }
 
-  return req;
+  return obj;
 }
 
 // =============================================================================
 
-awaitable<void> DoRequest(const HttpRequest& originalRequest,
-                          const std::string& host,
-                          const uint64_t port)
+//
+// Need to accept parameters by value because co_spawn immediately returns and
+// thus our ooriginal variables will go out of scope.
+//
+awaitable<std::string> DoRequest(HttpObject originalRequest,
+                                 std::string host,
+                                 uint64_t port,
+                                 tcp::socket& clientSocket)
 {
   using namespace boost::asio;
 
@@ -273,10 +311,10 @@ awaitable<void> DoRequest(const HttpRequest& originalRequest,
   if (ec)
   {
     std::cerr << std::format("Connection error: '{}'!\n", ec.message());
-    co_return;
+    co_return std::string();
   }
 
-  // Send request
+  // Send request.
   std::string request = "GET / HTTP/1.1\r\n";
   request += std::format("Host: {}\r\n", host);
   request += std::format("User-Agent: {}\r\n",
@@ -289,7 +327,7 @@ awaitable<void> DoRequest(const HttpRequest& originalRequest,
   // Read response using a dynamic buffer.
   std::string responseRcv;
 
-  // Read until the server closes the connection
+  // Read until the server closes the connection.
   while (not ec)
   {
     std::array<char, 4096> chunk;
@@ -304,70 +342,29 @@ awaitable<void> DoRequest(const HttpRequest& originalRequest,
     }
   }
 
-  // The connection was closed, get the full response
-  std::println("{}", responseRcv);
+  // The connection was closed, get the full response.
+  //std::println("{}", responseRcv);
 
   socket.close();
 
-  /*
-  using namespace boost::asio;
-  using namespace boost::beast;
+  // Send reply AS IS back to curl or whatever.
+  co_await async_write(clientSocket, buffer(responseRcv));
 
-  namespace beast = boost::beast;
-
-  auto executor = co_await this_coro::executor;
-  auto resolver = use_awaitable.as_default_on(tcp::resolver(executor));
-  auto stream   = use_awaitable.as_default_on(beast::tcp_stream(executor));
-
-  auto const results = co_await resolver.async_resolve(host,
-                                                       std::to_string(port));
-
-  // Set connection timeout.
-  stream.expires_after(std::chrono::seconds(10));
-  co_await stream.async_connect(results);
-
-  // 10 - HTTP/1.0, 11 - HTTP/1.1
-  http::request<http::string_body> req(http::verb::get, "/", 11);
-  req.set(http::field::host, host);
-  req.set(http::field::user_agent, originalRequest.ReadHeader("User-Agent"));
-
-  // Set execution timeout.
-  stream.expires_after(std::chrono::seconds(30));
-  co_await http::async_write(stream, req);
-
-  // Receive the response
-  beast::flat_buffer buffer;
-  http::response<http::dynamic_body> res;
-  co_await http::async_read(stream, buffer, res);
-
-  std::ostringstream oss;
-
-  oss << res;
-
-  std::string response = oss.str();
-
-  // Print the response.
-  std::println("{}", response);
-
-  // Gracefully close the connection
-  beast::error_code ec;
-  stream.socket().shutdown(tcp::socket::shutdown_both, ec);
-  if (ec && ec != beast::errc::not_connected)
-  {
-    std::cerr << "Failed to shutdown proxy connection!\n";
-  }
-  */
+  co_return responseRcv;
 }
 
 // =============================================================================
 
-void ProcessRequest(const HttpRequest& req, io_context& io_service)
+awaitable<void> ProcessRequest(const HttpObject& req,
+                               io_context& io_service,
+                               tcp::socket& clientSocket)
 {
   std::vector<std::string> parts = StringSplit(req.Body, ' ');
   if (parts.size() != 2)
   {
-    std::cerr << "Request body should be a string '<HOST> <PORT>'!\n";
-    return;
+    std::string err = "Request body should be a string '<HOST> <PORT>'!\n";
+    std::cerr << err;
+    co_return;
   }
 
   const std::string& host = parts[0];
@@ -380,57 +377,45 @@ void ProcessRequest(const HttpRequest& req, io_context& io_service)
   }
   catch (std::exception& ex)
   {
-    std::cerr << std::format(
+    std::string err = std::format(
       "Exception caught during request processing: '{}'\n", ex.what()
     );
-    return;
+    std::cerr << err;
+    co_return;
   }
 
   if (port > 65535)
   {
-    std::cerr << "Port must be [0; 65535]!\n";
-    return;
+    std::string err = "Port must be [0; 65535]!\n";
+    std::cerr << err;
+    co_return;
   }
 
-  co_spawn(
-    io_service,
-    DoRequest(req, host, port),
-    [](std::exception_ptr e)
-    {
-      if (e)
-      {
-        try
-        {
-          std::rethrow_exception(e);
-        }
-        catch (std::exception& ex)
-        {
-          std::cerr << std::format(
-            "Exception caught during request processing: '{}'!\n", ex.what()
-          );
-        }
-      }
-    }
-  );
+  std::string response = co_await DoRequest(std::move(req),
+                                            host,
+                                            port,
+                                            clientSocket);
+  StringToHttpObject(response, false);
 }
 
 // =============================================================================
 
-awaitable<void> session(tcp::socket client_socket,
+awaitable<void> Session(tcp::socket client_socket,
                         io_context& io_service)
 {
-  const static std::string ruler(80, '-');
-
   try
   {
     std::string clientIp = client_socket.remote_endpoint().address().to_string();
-    std::println("{}", ruler);
+    std::println("{}", Ruler);
     std::println("{} connected", clientIp);
 
     std::string rcv;
 
     error_code ec;
 
+    //
+    // co_await will "block" until coroutine is finished.
+    //
     // Read the HTTP request headers until we find the double CRLF
     size_t bytes = co_await async_read_until(
       client_socket,
@@ -445,10 +430,10 @@ awaitable<void> session(tcp::socket client_socket,
       co_return;
     }
 
-    std::optional<HttpRequest> req = ParseRequest(rcv);
+    std::optional<HttpObject> req = StringToHttpObject(rcv, true);
     if (req)
     {
-      ProcessRequest(*req, io_service);
+      co_await ProcessRequest(std::move(*req), io_service, client_socket);
     }
 
     client_socket.shutdown(tcp::socket::shutdown_both, ec);
@@ -482,6 +467,14 @@ private:
   void do_accept()
   {
     std::println("Waiting for connections...");
+
+    //
+    // co_spawn "detaches" execution by scheduling coroutine on the event loop
+    // (i.e. io_service_ here). So we're scheduling a coroutine that will listen
+    // to incoming connections indefinitely. boost::asio::detached means to
+    // ignore the result of the coroutine, but in case of unhandled exception
+    // std::terminate() will be called.
+    //
     co_spawn(
       io_service_,
       [this]() -> awaitable<void>
@@ -490,10 +483,19 @@ private:
         {
           try
           {
+            //
+            // This will "block" until client connects.
+            //
             tcp::socket s = co_await acceptor_.async_accept(use_awaitable);
+
+            //
+            // Schedule new coroutine to handle new incoming connection.
+            //
             co_spawn(
               io_service_,
-              session(std::move(s), io_service_), boost::asio::detached);
+              Session(std::move(s), io_service_),
+              boost::asio::detached
+            );
           }
           catch (const std::exception& ex)
           {
@@ -513,13 +515,17 @@ private:
   tcp::socket socket_;
 };
 
+// =============================================================================
+
 int main(int argc, char* argv[])
 {
   try
   {
     if (argc != 2)
     {
-      std::cerr << std::format("Usage: {} <PORT>\n", argv[0]);
+      std::cerr << std::format("Usage: {} <PORT>\n", argv[0])
+                << "POST data: '<HOST> <PORT>', e.g. 'example.com 80'\n"
+                << "";
       return 1;
     }
 

@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 #include "headers.h"
 
+//
+// Не очень понятно как писать эти тесты, в мессенджере вроде сказали, что
+// "ручного" теста достаточно.
+//
 TEST(iterHeaders, Empty)
 {
   // code here
