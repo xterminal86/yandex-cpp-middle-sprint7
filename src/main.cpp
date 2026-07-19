@@ -1,5 +1,3 @@
-#include "headers.h"
-
 #include <boost/asio.hpp>
 // io_service is replaced with io_context since boost 1.87
 #include <boost/asio/io_context.hpp>
@@ -11,7 +9,10 @@
 #include <string_view>
 #include <iostream>
 #include <print>
-#include <ranges>
+
+#include "constants.h"
+#include "headers.h"
+#include "utils.h"
 
 using boost::asio::io_context;
 using boost::asio::co_spawn;
@@ -26,261 +27,9 @@ using boost::asio::ip::tcp;
 
 constexpr std::string_view delimiter = "\r\n\r\n";
 
-const std::string Ruler(80, '-');
-const std::string RulerSND(80, '>');
-const std::string RulerRCV(80, '<');
-
-// =============================================================================
-
-struct HttpObject
-{
-  //
-  // Not the best solution, but just to save overall time dealing with this.
-  //
-  // E.g. 'GET / HTTP/1.1' for request or 'HTTP/1.1 200 OK' for response.
-  //
-  std::tuple<std::string, std::string, std::string> FirstLine;
-
-  std::unordered_map<std::string, std::string> Headers;
-
-  std::string Body;
-
-  std::string ReadHeader(const std::string& key) const
-  {
-    std::string copy = key;
-
-    std::transform(
-      copy.begin(),
-      copy.end(),
-      copy.begin(),
-      [](unsigned char c)
-      {
-        return std::tolower(c);
-      }
-    );
-
-    std::string value;
-
-    if (Headers.contains(copy))
-    {
-      value = Headers.at(copy);
-    }
-
-    return value;
-  }
-
-  std::string ToString()
-  {
-    std::stringstream ss;
-
-    ss << std::format("Method  / Version: '{}'\n",   std::get<0>(FirstLine))
-       << std::format("Path    / Status : '{}'\n",   std::get<1>(FirstLine))
-       << std::format("Version / Message: '{}'\n\n", std::get<2>(FirstLine))
-       << "Headers:\n\n";
-
-    size_t n = 1;
-    for (auto& kvp : Headers)
-    {
-      ss << std::format("{}. '{}' = '{}'\n", n++, kvp.first, kvp.second);
-    }
-
-    ss << "\n";
-    ss << "Body:\n";
-    ss << Body;
-
-    return ss.str();
-  }
-};
-
-// =============================================================================
-
-std::vector<std::string> StringSplit(const std::string& str, char delimiter)
-{
-  auto spl = std::views::split(str, delimiter);
-  auto parts = spl | std::views::transform(
-    [](auto&& range)
-    {
-      return std::string(range.begin(), range.end());
-    }
-  ) | std::ranges::to<std::vector>();
-
-  return parts;
-}
-
-// =============================================================================
-
-//
-// NOTE: search for whitespaces only (i.e. ' ').
-//
-std::string Trim(const std::string& in)
-{
-  auto _ltrim = [](const std::string& s)
-  {
-    size_t start = s.find_first_not_of(' ');
-    return (start == std::string::npos) ? "" : s.substr(start);
-  };
-
-  auto _rtrim = [](const std::string& s)
-  {
-    size_t end = s.find_last_not_of(' ');
-    return (end == std::string::npos) ? "" : s.substr(0, end + 1);
-  };
-
-  return _rtrim(_ltrim(in));
-}
-
-// =============================================================================
-
-std::optional<HttpObject> StringToHttpObject(std::string& rcv, bool isRequest)
-{
-  HttpObject obj;
-
-  bool parseOk = true;
-
-  //
-  // Cannot use const here for some fucking reason.
-  //
-  std::string reqiestDataDelimiter = "\r\n";
-
-  std::vector<std::string> postData;
-
-  std::ranges::split_view<
-    std::ranges::ref_view<std::string>,
-    std::ranges::ref_view<std::string>
-  > splitted = std::views::split(rcv, reqiestDataDelimiter);
-
-  uint8_t emptyLinesCount = 0;
-
-  for (const auto& line : splitted)
-  {
-    std::string lineStr(line.begin(), line.end());
-    postData.push_back(lineStr);
-  }
-
-  for (size_t i = 0; i < postData.size(); i++)
-  {
-    const std::string& line = postData[i];
-
-    //
-    // 'GET / HTTP/1.1' or whatever.
-    //
-    // RFC says that 1 space character is a delimiter:
-    // 'status-line = HTTP-version SP status-code SP reason-phrase CRLF'
-    // so theoretically there can be multiple spaces in between.
-    //
-    if (i == 0)
-    {
-      std::vector<std::string> parts = StringSplit(line, ' ');
-      if (parts.size() == 3)
-      {
-        std::get<0>(obj.FirstLine) = Trim(parts[0]);
-        std::get<1>(obj.FirstLine) = Trim(parts[1]);
-        std::get<2>(obj.FirstLine) = Trim(parts[2]);
-      }
-      else
-      {
-        std::cerr << "Cannot parse '<METHOD> <PATH> <VERSION>'!\n";
-        parseOk = false;
-        break;
-      }
-    }
-    else
-    {
-      if (line.empty())
-      {
-        emptyLinesCount++;
-      }
-      else
-      {
-        //
-        // Blank line before body.
-        //
-        if (emptyLinesCount >= 1)
-        {
-          obj.Body = line;
-        }
-        else
-        {
-          //
-          // According to RFC 7230:
-          // "Each header field consists of a case-insensitive field name
-          // followed by a colon (":"), optional leading whitespace, the
-          // field value, and optional trailing whitespace."
-          //
-          size_t pos = line.find(":");
-          if (not line.empty() and pos != std::string::npos)
-          {
-            std::string key = line.substr(0, pos);
-
-            std::string value = line.substr(pos + 1);
-            if (not value.empty())
-            {
-              //
-              // Типа метод двух указателей, привет Алгосам, лол.
-              //
-              size_t begin = 0;
-              size_t end = value.length() - 1;
-              while (true)
-              {
-                if (value[begin] != ' ' and value[end] != ' ')
-                {
-                  break;
-                }
-
-                if (value[begin] == ' ') begin++;
-                if (value[end]   == ' ') end--;
-              }
-
-              value = std::string(value.begin() + begin,
-                                  value.begin() + end + 1);
-            }
-
-            //
-            // HTTP header keys are case-insensitive.
-            //
-            std::transform(
-              key.begin(),
-              key.end(),
-              key.begin(),
-              [](unsigned char c)
-              {
-                return std::tolower(c);
-              }
-            );
-
-            obj.Headers[key] = value;
-          }
-          else
-          {
-            std::cerr << std::format("Invalid header format: '{}'!\n", line);
-            parseOk = false;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  if (parseOk)
-  {
-    std::println("{}", (isRequest ? RulerSND : RulerRCV));
-    std::println("Parsed {}:\n", (isRequest ? "request" : "response"));
-    std::println("{}", obj.ToString());
-    std::println("{}", (isRequest ? RulerSND : RulerRCV));
-  }
-  else
-  {
-    return std::nullopt;
-  }
-
-  return obj;
-}
-
-// =============================================================================
-
 //
 // Need to accept parameters by value because co_spawn immediately returns and
-// thus our ooriginal variables will go out of scope.
+// thus our original variables will go out of scope.
 //
 awaitable<std::string> DoRequest(HttpObject originalRequest,
                                  std::string host,
@@ -330,7 +79,7 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
   // Read until the server closes the connection.
   while (not ec)
   {
-    std::array<char, 4096> chunk;
+    std::array<char, kChunkSizeBytes> chunk;
     size_t bytes_read = co_await socket.async_read_some(
       buffer(chunk),
       redirect_error(use_awaitable, ec)
@@ -371,18 +120,14 @@ awaitable<void> ProcessRequest(const HttpObject& req,
 
   uint64_t port = 0;
 
-  try
+  auto conv = Str2Int<uint64_t>(parts[1]);
+  if (not conv)
   {
-    port = std::stoull(parts[1]);
-  }
-  catch (std::exception& ex)
-  {
-    std::string err = std::format(
-      "Exception caught during request processing: '{}'\n", ex.what()
-    );
-    std::cerr << err;
+    std::cerr << conv.error();
     co_return;
   }
+
+  port = *conv;
 
   if (port > 65535)
   {
@@ -406,7 +151,7 @@ awaitable<void> Session(tcp::socket client_socket,
   try
   {
     std::string clientIp = client_socket.remote_endpoint().address().to_string();
-    std::println("{}", Ruler);
+    std::println("{}", kRuler);
     std::println("{} connected", clientIp);
 
     std::string rcv;
@@ -433,7 +178,7 @@ awaitable<void> Session(tcp::socket client_socket,
     std::optional<HttpObject> req = StringToHttpObject(rcv, true);
     if (req)
     {
-      co_await ProcessRequest(std::move(*req), io_service, client_socket);
+      co_await ProcessRequest(*req, io_service, client_socket);
     }
 
     client_socket.shutdown(tcp::socket::shutdown_both, ec);
@@ -529,7 +274,17 @@ int main(int argc, char* argv[])
       return 1;
     }
 
-    uint64_t port = std::stoull(argv[1]);
+    uint64_t port = 0;
+
+    auto conv = Str2Int<uint64_t>(argv[1]);
+    if (not conv)
+    {
+      std::cerr << conv.error();
+      return 1;
+    }
+
+    port = *conv;
+
     if (port > 65535)
     {
       std::cerr << "Port range must be [0 ; 65535]\n";

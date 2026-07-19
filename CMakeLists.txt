@@ -23,10 +23,14 @@ file(GLOB HEADER_FILES "${CMAKE_SOURCE_DIR}/src/*.hpp")
 
 
 # Создаём статическую библиотеку
-add_library(${PROJECT_NAME}_imp STATIC
-  "${CMAKE_SOURCE_DIR}/src/main.cpp"
+add_library(
+  ${PROJECT_NAME}_imp
+  STATIC
   "${CMAKE_SOURCE_DIR}/src/headers.cpp"
-  ${HEADER_FILES})
+  "${CMAKE_SOURCE_DIR}/src/utils.cpp"
+  "${CMAKE_SOURCE_DIR}/src/constants.cpp"
+  ${HEADER_FILES}
+)
 
 # Добавляем в проект используемые сторонние библиотеки
 target_include_directories(${PROJECT_NAME}_imp PUBLIC
@@ -36,9 +40,10 @@ target_include_directories(${PROJECT_NAME}_imp PUBLIC
 target_link_libraries(${PROJECT_NAME}_imp PRIVATE ${Boost_LIBRARIES})
 
 # Создаём исполняемый таргет и линкуем к нему статическую библиотеку
-add_executable(${PROJECT_NAME}
+add_executable(
+  ${PROJECT_NAME}
   "${CMAKE_SOURCE_DIR}/src/main.cpp"
-  "${CMAKE_SOURCE_DIR}/src/headers.cpp")
+)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_imp)
 
 #
