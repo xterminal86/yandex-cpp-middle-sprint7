@@ -38,6 +38,7 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
 {
   using namespace boost::asio;
 
+  // Get event loop "handler" for this coroutine (i.e. io_context).
   auto executor = co_await this_coro::executor;
 
   tcp::resolver resolver(executor);
@@ -64,14 +65,17 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
   }
 
   // Send request.
-  std::string request = "GET / HTTP/1.1\r\n";
-  request += std::format("Host: {}\r\n", host);
-  request += std::format("User-Agent: {}\r\n",
-                         originalRequest.ReadHeader("User-Agent"));
-  request += "Connection: close\r\n";
-  request += "\r\n";
+  std::stringstream request;
 
-  co_await async_write(socket, buffer(request));
+  request << "GET / HTTP/1.1\r\n"
+          << std::format("Host: {}\r\n", host)
+          << std::format("User-Agent: {}\r\n",
+                         originalRequest.ReadHeader("User-Agent"))
+          << "Connection: close\r\n"
+          << "\r\n"
+          << "";
+
+  co_await async_write(socket, buffer(request.str()));
 
   // Read response using a dynamic buffer.
   std::string responseRcv;
@@ -96,7 +100,7 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
 
   socket.close();
 
-  // Send reply AS IS back to curl or whatever.
+ // Send chunk back AS IS to curl or whatever immediately to save memory.
   co_await async_write(clientSocket, buffer(responseRcv));
 
   co_return responseRcv;
@@ -115,6 +119,19 @@ awaitable<void> ProcessRequest(const HttpObject& req,
     std::cerr << err;
     co_return;
   }
+
+  // TODO:
+
+  /*
+  std::string hostHeader = req.ReadHeader("Host");
+  if (hostHeader.empty())
+  {
+    std::cerr << "No 'Host' HTTP header found!\n";
+    co_return;
+  }
+
+  std::vector<std::string> parts = StringSplit(hostHeader, ":");
+  */
 
   const std::string& host = parts[0];
 
@@ -140,7 +157,14 @@ awaitable<void> ProcessRequest(const HttpObject& req,
                                             host,
                                             port,
                                             clientSocket);
-  StringToHttpObject(response, false);
+  std::optional<HttpObject> resp = StringToHttpObject(response);
+  if (resp)
+  {
+    std::println("{}", kRulerRCV);
+    std::println("Parsed response:\n");
+    std::println("{}", resp.value().ToString());
+    std::println("{}", kRulerRCV);
+  }
 }
 
 // =============================================================================
@@ -175,9 +199,14 @@ awaitable<void> Session(tcp::socket client_socket,
       co_return;
     }
 
-    std::optional<HttpObject> req = StringToHttpObject(rcv, true);
+    std::optional<HttpObject> req = StringToHttpObject(rcv);
     if (req)
     {
+      std::println("{}", kRulerSND);
+      std::println("Parsed request:\n");
+      std::println("{}", req.value().ToString());
+      std::println("{}", kRulerSND);
+
       co_await ProcessRequest(*req, io_service, client_socket);
     }
 

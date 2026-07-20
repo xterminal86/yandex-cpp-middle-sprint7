@@ -13,7 +13,7 @@
 
 std::vector<std::string> StringSplit(const std::string& str, char delimiter);
 std::string Trim(const std::string& in);
-std::optional<HttpObject> StringToHttpObject(std::string& rcv, bool isRequest);
+std::optional<HttpObject> StringToHttpObject(std::string& rcv);
 
 // =============================================================================
 

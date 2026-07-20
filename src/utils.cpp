@@ -41,7 +41,7 @@ std::string Trim(const std::string& in)
 
 // =============================================================================
 
-std::optional<HttpObject> StringToHttpObject(std::string& rcv, bool isRequest)
+std::optional<HttpObject> StringToHttpObject(std::string& rcv)
 {
   HttpObject obj;
 
@@ -171,14 +171,7 @@ std::optional<HttpObject> StringToHttpObject(std::string& rcv, bool isRequest)
     }
   }
 
-  if (parseOk)
-  {
-    std::println("{}", (isRequest ? kRulerSND : kRulerRCV));
-    std::println("Parsed {}:\n", (isRequest ? "request" : "response"));
-    std::println("{}", obj.ToString());
-    std::println("{}", (isRequest ? kRulerSND : kRulerRCV));
-  }
-  else
+  if (not parseOk)
   {
     return std::nullopt;
   }
