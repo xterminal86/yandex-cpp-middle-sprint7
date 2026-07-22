@@ -48,14 +48,28 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
 
   tcp::socket socket(executor);
 
-  // Set connection timeout.
-  steady_timer timer(executor, std::chrono::seconds(30));
+  steady_timer timer(executor);
+
+  timer.expires_after(Constants::ConnectionTimeout);
+
+  timer.async_wait(
+    [&](error_code timerEc)
+    {
+      if (not timerEc)
+      {
+        // Timer expired, cancel the socket.
+        // This will cause async_connect to complete with error.
+        socket.cancel();
+      }
+    }
+  );
 
   co_await socket.async_connect(
     *endpoints.begin(),
     redirect_error(use_awaitable, ec)
   );
 
+  // Cancel timer if it hasn't fired.
   timer.cancel();
 
   if (ec)
@@ -75,6 +89,8 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
           << "\r\n"
           << "";
 
+  timer.expires_after(Constants::ExecutionTimeout);
+
   co_await async_write(socket, buffer(request.str()));
 
   // Read response using a dynamic buffer.
@@ -83,7 +99,7 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
   // Read until the server closes the connection.
   while (not ec)
   {
-    std::array<char, kChunkSizeBytes> chunk;
+    std::array<char, Constants::ChunkSizeBytes> chunk;
     size_t bytes_read = co_await socket.async_read_some(
       buffer(chunk),
       redirect_error(use_awaitable, ec)
@@ -103,6 +119,8 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
  // Send chunk back AS IS to curl or whatever immediately to save memory.
   co_await async_write(clientSocket, buffer(responseRcv));
 
+  timer.cancel();
+
   co_return responseRcv;
 }
 
@@ -112,17 +130,6 @@ awaitable<void> ProcessRequest(const HttpObject& req,
                                io_context& io_service,
                                tcp::socket& clientSocket)
 {
-  std::vector<std::string> parts = StringSplit(req.Body, ' ');
-  if (parts.size() != 2)
-  {
-    std::string err = "Request body should be a string '<HOST> <PORT>'!\n";
-    std::cerr << err;
-    co_return;
-  }
-
-  // TODO:
-
-  /*
   std::string hostHeader = req.ReadHeader("Host");
   if (hostHeader.empty())
   {
@@ -130,27 +137,31 @@ awaitable<void> ProcessRequest(const HttpObject& req,
     co_return;
   }
 
-  std::vector<std::string> parts = StringSplit(hostHeader, ":");
-  */
+  std::vector<std::string> parts = StringSplit(hostHeader, ':');
 
   const std::string& host = parts[0];
 
-  uint64_t port = 0;
+  // Default port is assumed by protocol. Since we don't use HTTPS, assume it's
+  // always 80 by default.
+  uint64_t port = 80;
 
-  auto conv = Str2Int<uint64_t>(parts[1]);
-  if (not conv)
+  if (parts.size() == 2)
   {
-    std::cerr << conv.error();
-    co_return;
-  }
+    auto conv = Str2Int<uint64_t>(parts[1]);
+    if (not conv)
+    {
+      std::cerr << conv.error();
+      co_return;
+    }
 
-  port = *conv;
+    port = *conv;
 
-  if (port > 65535)
-  {
-    std::string err = "Port must be [0; 65535]!\n";
-    std::cerr << err;
-    co_return;
+    if (port > 65535)
+    {
+      std::string err = "Port must be [0; 65535]!\n";
+      std::cerr << err;
+      co_return;
+    }
   }
 
   std::string response = co_await DoRequest(std::move(req),
@@ -160,10 +171,10 @@ awaitable<void> ProcessRequest(const HttpObject& req,
   std::optional<HttpObject> resp = StringToHttpObject(response);
   if (resp)
   {
-    std::println("{}", kRulerRCV);
+    std::println("{}", Constants::RulerRCV);
     std::println("Parsed response:\n");
     std::println("{}", resp.value().ToString());
-    std::println("{}", kRulerRCV);
+    std::println("{}", Constants::RulerRCV);
   }
 }
 
@@ -175,7 +186,7 @@ awaitable<void> Session(tcp::socket client_socket,
   try
   {
     std::string clientIp = client_socket.remote_endpoint().address().to_string();
-    std::println("{}", kRuler);
+    std::println("{}", Constants::Ruler);
     std::println("{} connected", clientIp);
 
     std::string rcv;
@@ -202,10 +213,10 @@ awaitable<void> Session(tcp::socket client_socket,
     std::optional<HttpObject> req = StringToHttpObject(rcv);
     if (req)
     {
-      std::println("{}", kRulerSND);
+      std::println("{}", Constants::RulerSND);
       std::println("Parsed request:\n");
       std::println("{}", req.value().ToString());
-      std::println("{}", kRulerSND);
+      std::println("{}", Constants::RulerSND);
 
       co_await ProcessRequest(*req, io_service, client_socket);
     }

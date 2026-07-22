@@ -1,5 +1,11 @@
 #include "constants.h"
 
-const std::string kRuler(80, '-');
-const std::string kRulerSND(80, '>');
-const std::string kRulerRCV(80, '<');
+namespace Constants
+{
+  const std::string Ruler(80, '-');
+  const std::string RulerSND(80, '>');
+  const std::string RulerRCV(80, '<');
+
+  const Seconds ConnectionTimeout = Seconds(5);
+  const Seconds ExecutionTimeout  = Seconds(10);
+}

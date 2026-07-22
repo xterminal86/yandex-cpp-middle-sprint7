@@ -2,11 +2,20 @@
 #define CONSTANTS_H
 
 #include <string>
+#include <chrono>
 
-extern const std::string kRuler;
-extern const std::string kRulerSND;
-extern const std::string kRulerRCV;
+using Seconds = std::chrono::seconds;
 
-constexpr size_t kChunkSizeBytes = 4096;
+namespace Constants
+{
+  extern const std::string Ruler;
+  extern const std::string RulerSND;
+  extern const std::string RulerRCV;
+
+  extern const Seconds ConnectionTimeout;
+  extern const Seconds ExecutionTimeout;
+
+  constexpr size_t ChunkSizeBytes = 4096;
+}
 
 #endif
