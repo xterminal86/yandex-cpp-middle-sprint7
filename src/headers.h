@@ -4,7 +4,11 @@
 #include <functional>
 #include <optional>
 
+#include "constants.h"
+
 using Callback = std::function<void(std::string_view, std::string_view)>;
+
+bool ParseHeader(const std::string& headerLine, PairSS& out);
 
 void iterHeaders(std::string_view req, Callback&& callback);
 

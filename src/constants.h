@@ -3,8 +3,12 @@
 
 #include <string>
 #include <chrono>
+#include <tuple>
+#include <string>
 
 using Seconds = std::chrono::seconds;
+using Tuple3S = std::tuple<std::string, std::string, std::string>;
+using PairSS  = std::pair<std::string, std::string>;
 
 namespace Constants
 {

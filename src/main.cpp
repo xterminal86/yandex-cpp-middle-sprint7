@@ -6,6 +6,9 @@
 #include <boost/asio/read_until.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
+// For operator || on awaitables.
+#include <boost/asio/experimental/awaitable_operators.hpp>
+
 #include <string_view>
 #include <iostream>
 #include <print>
@@ -25,7 +28,9 @@ using boost::asio::dynamic_buffer;
 using boost::asio::transfer_at_least;
 using boost::asio::ip::tcp;
 
-constexpr std::string_view delimiter = "\r\n\r\n";
+using namespace boost::asio::experimental::awaitable_operators;
+
+constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 
 //
 // Need to accept parameters by value because co_spawn immediately returns and
@@ -50,16 +55,21 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
 
   steady_timer timer(executor);
 
+  //
+  // You can test connection timeout by trying to connect to a closed port (e.g.
+  // curl -v -x 127.0.0.1:9999 example.com:1234).
+  //
   timer.expires_after(Constants::ConnectionTimeout);
+
+  bool connectOk = true;
 
   timer.async_wait(
     [&](error_code timerEc)
     {
       if (not timerEc)
       {
-        // Timer expired, cancel the socket.
-        // This will cause async_connect to complete with error.
         socket.cancel();
+        connectOk = false;
       }
     }
   );
@@ -69,32 +79,69 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
     redirect_error(use_awaitable, ec)
   );
 
-  // Cancel timer if it hasn't fired.
   timer.cancel();
 
   if (ec)
   {
-    std::cerr << std::format("Connection error: '{}'!\n", ec.message());
-    co_return std::string();
+    std::string msg = std::format("Connection error: '{}'!\n", ec.message());
+    std::cerr << msg;
+    co_await async_write(clientSocket, buffer(msg));
+    co_return msg;
   }
 
   // Send request.
   std::stringstream request;
 
-  request << "GET / HTTP/1.1\r\n"
-          << std::format("Host: {}\r\n", host)
-          << std::format("User-Agent: {}\r\n",
-                         originalRequest.ReadHeader("User-Agent"))
-          << "Connection: close\r\n"
+  request << "GET / HTTP/1.1\r\n";
+
+  //
+  // Forward all request headers.
+  // NOTE: It seems example.com won't respond if you add custom header(s), so
+  // test this on stub-server.py
+  //
+  for (auto& kvp : originalRequest.Headers)
+  {
+    request << std::format("{}: {}\r\n", kvp.first, kvp.second);
+  }
+
+  //
+  // Without this it won't connect to anything but stub-server.py
+  //
+  request << "Connection: close\r\n"
           << "\r\n"
           << "";
 
-  timer.expires_after(Constants::ExecutionTimeout);
+  co_await async_write(
+    socket,
+    buffer(request.str()),
+    redirect_error(use_awaitable, ec)
+  );
 
-  co_await async_write(socket, buffer(request.str()));
+  if (ec)
+  {
+    std::string msg = std::format("Write error: '{}'!\n", ec.message());
+    std::cerr << msg;
+    co_await async_write(clientSocket, buffer(msg));
+    co_return msg;
+  }
 
   // Read response using a dynamic buffer.
   std::string responseRcv;
+
+  timer.expires_after(Constants::ExecutionTimeout);
+
+  bool execOk = true;
+
+  timer.async_wait(
+    [&](error_code timerEc)
+    {
+      if (not timerEc)
+      {
+        socket.cancel();
+        execOk = false;
+      }
+    }
+  );
 
   // Read until the server closes the connection.
   while (not ec)
@@ -107,19 +154,32 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
 
     if (not ec && bytes_read > 0)
     {
+      //
+      // По хорошему для экономии памяти здесь тогда не надо набирать строку и
+      // сразу отсылать ответ, но поскольку учебный проект, то для дебага
+      // оставим.
+      //
       responseRcv += std::string(chunk.data(), bytes_read);
+    }
+
+    if (not execOk)
+    {
+      responseRcv = "Read error!\n";
+      break;
     }
   }
 
+  timer.cancel();
+
   // The connection was closed, get the full response.
+  //std::println("Full response:");
   //std::println("{}", responseRcv);
+  //std::println("");
 
   socket.close();
 
- // Send chunk back AS IS to curl or whatever immediately to save memory.
+  // Send response AS IS back to curl or whatever.
   co_await async_write(clientSocket, buffer(responseRcv));
-
-  timer.cancel();
 
   co_return responseRcv;
 }
@@ -141,8 +201,12 @@ awaitable<void> ProcessRequest(const HttpObject& req,
 
   const std::string& host = parts[0];
 
-  // Default port is assumed by protocol. Since we don't use HTTPS, assume it's
+  //
+  // Default port is assumed by curl if protocol is "standard" (e.g.
+  // 'http://www.whatever.com' -> 80, 'https://www.whatever.com' -> 443 and so
+  // on), so it won't be in a header. Since we only use HTTP here, assume it's
   // always 80 by default.
+  //
   uint64_t port = 80;
 
   if (parts.size() == 2)
@@ -156,6 +220,9 @@ awaitable<void> ProcessRequest(const HttpObject& req,
 
     port = *conv;
 
+    //
+    // If you use curl, it validates port value automatically, but just in case.
+    //
     if (port > 65535)
     {
       std::string err = "Port must be [0; 65535]!\n";
@@ -168,6 +235,10 @@ awaitable<void> ProcessRequest(const HttpObject& req,
                                             host,
                                             port,
                                             clientSocket);
+  //std::println("Response raw:\n");
+  //std::println("{}", response);
+  //std::println("");
+
   std::optional<HttpObject> resp = StringToHttpObject(response);
   if (resp)
   {
@@ -197,10 +268,11 @@ awaitable<void> Session(tcp::socket client_socket,
     // co_await will "block" until coroutine is finished.
     //
     // Read the HTTP request headers until we find the double CRLF
+    //
     size_t bytes = co_await async_read_until(
       client_socket,
       dynamic_buffer(rcv),
-      delimiter,
+      DoubleCRLF,
       redirect_error(use_awaitable, ec)
     );
 
@@ -308,9 +380,7 @@ int main(int argc, char* argv[])
   {
     if (argc != 2)
     {
-      std::cerr << std::format("Usage: {} <PORT>\n", argv[0])
-                << "POST data: '<HOST> <PORT>', e.g. 'example.com 80'\n"
-                << "";
+      std::cerr << std::format("Usage: {} <PORT>\n", argv[0]);
       return 1;
     }
 

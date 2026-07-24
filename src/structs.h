@@ -1,12 +1,12 @@
 #ifndef STRUCTS_H
 #define STRUCTS_H
 
-#include <tuple>
 #include <unordered_map>
-#include <string>
 #include <algorithm>
 #include <format>
 #include <sstream>
+
+#include "constants.h"
 
 struct HttpObject
 {
@@ -15,11 +15,9 @@ struct HttpObject
   //
   // E.g. 'GET / HTTP/1.1' for request or 'HTTP/1.1 200 OK' for response.
   //
-  std::tuple<std::string, std::string, std::string> FirstLine;
+  Tuple3S FirstLine;
 
   std::unordered_map<std::string, std::string> Headers;
-
-  std::string Body;
 
   std::string ReadHeader(const std::string& key) const
   {
@@ -60,10 +58,6 @@ struct HttpObject
     {
       ss << std::format("{}. '{}' = '{}'\n", n++, kvp.first, kvp.second);
     }
-
-    ss << "\n";
-    ss << "Body:\n";
-    ss << Body;
 
     return ss.str();
   }
