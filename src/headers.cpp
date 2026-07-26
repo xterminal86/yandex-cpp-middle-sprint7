@@ -103,8 +103,18 @@ void iterHeaders(std::string_view req, Callback&& callback)
 
   constexpr std::string_view lineDelimiter = "\r\n";
 
-  std::ranges::split_view<std::string_view, std::string_view>
-  splitted = std::views::split(req, lineDelimiter);
+  //
+  // The actual type is:
+  //
+  // std::ranges::drop_view<
+  //   std::ranges::split_view<std::string_view, std::string_view>
+  // >
+  //
+  using SplitView = std::ranges::split_view<std::string_view, std::string_view>;
+  using DropView = std::ranges::drop_view<SplitView>;
+
+  DropView splitted = std::views::split(req, lineDelimiter) |
+                      std::views::drop(1); // remove 'GET / HTTP/1.1' or whatever.
 
   for (const auto& line : splitted)
   {
@@ -112,22 +122,8 @@ void iterHeaders(std::string_view req, Callback&& callback)
     headersData.push_back(lineStr);
   }
 
-  bool firstLine = true;
-
   for (auto& line : headersData)
   {
-    //
-    // 'GET / HTTP/1.1' or whatever.
-    //
-    if (firstLine)
-    {
-      firstLine = false;
-      continue;
-    }
-
-    //
-    // HTTP headers.
-    //
     PairSS header;
     if (ParseHeader(line, header))
     {

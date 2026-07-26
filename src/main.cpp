@@ -92,7 +92,16 @@ awaitable<std::string> DoRequest(HttpObject originalRequest,
   // Send request.
   std::stringstream request;
 
-  request << "GET / HTTP/1.1\r\n";
+  //request << "GET / HTTP/1.1\r\n";
+
+  //
+  // Forward original request method.
+  //
+  request << std::get<0>(originalRequest.FirstLine) << " "
+          << std::get<1>(originalRequest.FirstLine) << " "
+          << std::get<2>(originalRequest.FirstLine)
+          << "\r\n"
+          << "";
 
   //
   // Forward all request headers.
